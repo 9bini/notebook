@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=logs-cluster
+      - node.name=logs-node-1
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - elk-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: logstash
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+      - "5000:5000/udp"
+    volumes:
+      - ./logstash/config:/usr/share/logstash/pipeline:ro
+      - ./logstash/patterns:/usr/share/logstash/patterns:ro
+    environment:
+      - "LS_JAVA_OPTS=-Xmx512m -Xms512m"
+      - ELASTICSEARCH_HOST=elasticsearch:9200
+    networks:
+      - elk-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+    networks:
+      - elk-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.0
+    container_name: filebeat
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/host/var/log:ro
+      - ./logs:/usr/share/filebeat/logs:rw
+    environment:
+      - ELASTICSEARCH_HOST=elasticsearch:9200
+      - LOGSTASH_HOST=logstash:5044
+    networks:
+      - elk-network
+    depends_on:
+      - logstash
+
+  # 로그 생성기 (테스트용)
+  log-generator:
+    image: alpine:latest
+    container_name: log-generator
+    volumes:
+      - ./logs:/var/log/app:rw
+    command: >
+      sh -c "
+        while true; do
+          echo '{\"timestamp\":\"'$(date -Iseconds)'\",\"level\":\"INFO\",\"service\":\"app-service\",\"message\":\"Processing request\",\"user_id\":\"'$$((RANDOM % 1000))'\",\"request_id\":\"'$(uuidgen)'\"}' >> /var/log/app/application.log;
+          echo '{\"timestamp\":\"'$(date -Iseconds)'\",\"level\":\"ERROR\",\"service\":\"db-service\",\"message\":\"Connection timeout\",\"error\":\"java.net.SocketTimeoutException\"}' >> /var/log/app/error.log;
+          sleep 5;
+        done
+      "
+    networks:
+      - elk-network
+
+  # Redis (캐싱 및 버퍼링용)
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - elk-network
+    command: redis-server --appendonly yes
+
+  # Prometheus (메트릭 수집)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - elk-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # Grafana (시각화)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - elk-network
+
+volumes:
+  elasticsearch_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  elk-network:
+    driver: bridge
