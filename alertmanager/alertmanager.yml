@@ -1,0 +1,125 @@
+global:
+  smtp_smarthost: 'localhost:587'
+  smtp_from: 'alerts@company.com'
+  smtp_auth_username: 'alerts@company.com'
+  smtp_auth_password: 'password'
+
+# 알림 그룹화 및 라우팅 규칙
+route:
+  group_by: ['alertname', 'service', 'environment']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 12h
+  receiver: 'default-receiver'
+  
+  routes:
+  # 심각한 알림 (즉시 전송)
+  - match:
+      severity: critical
+    receiver: 'critical-alerts'
+    group_wait: 0s
+    repeat_interval: 5m
+    
+  # 에러 로그 알림
+  - match:
+      alertname: ErrorLogAlert
+    receiver: 'error-alerts'
+    group_interval: 2m
+    
+  # 성능 알림
+  - match:
+      alertname: HighResponseTime
+    receiver: 'performance-alerts'
+    
+  # 시스템 알림
+  - match:
+      type: system
+    receiver: 'system-alerts'
+
+# 알림 수신자 설정
+receivers:
+- name: 'default-receiver'
+  email_configs:
+  - to: 'devops@company.com'
+    subject: '[{{ .GroupLabels.environment }}] {{ .GroupLabels.alertname }}'
+    body: |
+      {{ range .Alerts }}
+      Alert: {{ .Annotations.summary }}
+      Description: {{ .Annotations.description }}
+      Service: {{ .Labels.service }}
+      Environment: {{ .Labels.environment }}
+      Time: {{ .StartsAt }}
+      {{ end }}
+
+- name: 'critical-alerts'
+  email_configs:
+  - to: 'oncall@company.com'
+    subject: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+    body: |
+      CRITICAL ALERT TRIGGERED
+      ========================
+      {{ range .Alerts }}
+      Alert: {{ .Annotations.summary }}
+      Description: {{ .Annotations.description }}
+      Service: {{ .Labels.service }}
+      Environment: {{ .Labels.environment }}
+      Severity: {{ .Labels.severity }}
+      Time: {{ .StartsAt }}
+      
+      Runbook: {{ .Annotations.runbook_url }}
+      {{ end }}
+  
+  slack_configs:
+  - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+    channel: '#alerts-critical'
+    title: '🚨 Critical Alert: {{ .GroupLabels.alertname }}'
+    text: |
+      {{ range .Alerts }}
+      *Service*: {{ .Labels.service }}
+      *Environment*: {{ .Labels.environment }}
+      *Description*: {{ .Annotations.description }}
+      *Time*: {{ .StartsAt }}
+      {{ end }}
+
+- name: 'error-alerts'
+  slack_configs:
+  - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+    channel: '#alerts-errors'
+    title: '❌ Error Alert: {{ .GroupLabels.alertname }}'
+    text: |
+      {{ range .Alerts }}
+      *Service*: {{ .Labels.service }}
+      *Error Count*: {{ .Labels.error_count }}
+      *Time Range*: Last 5 minutes
+      {{ end }}
+
+- name: 'performance-alerts'
+  slack_configs:
+  - api_url: 'YOUR_SLACK_WEBHOOK_URL'
+    channel: '#alerts-performance'
+    title: '⚡ Performance Alert: {{ .GroupLabels.alertname }}'
+    text: |
+      {{ range .Alerts }}
+      *Service*: {{ .Labels.service }}
+      *Response Time*: {{ .Labels.response_time }}ms
+      *Threshold*: {{ .Annotations.threshold }}
+      {{ end }}
+
+- name: 'system-alerts'
+  email_configs:
+  - to: 'sysadmin@company.com'
+    subject: '[SYSTEM] {{ .GroupLabels.alertname }}'
+
+# 알림 억제 규칙 (중복 알림 방지)
+inhibit_rules:
+- source_match:
+    severity: 'critical'
+  target_match:
+    severity: 'warning'
+  equal: ['alertname', 'service', 'environment']
+
+- source_match:
+    alertname: 'ServiceDown'
+  target_match_re:
+    alertname: '.*'
+  equal: ['service']

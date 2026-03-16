@@ -1,0 +1,115 @@
+filebeat.inputs:
+# 애플리케이션 로그 수집
+- type: log
+  enabled: true
+  paths:
+    - /usr/share/filebeat/logs/*.log
+    - /host/var/log/app/*.log
+  fields:
+    logtype: application
+    environment: ${ENVIRONMENT:development}
+    service: app-service
+  fields_under_root: true
+  
+  # 멀티라인 로그 처리 (스택 트레이스 등)
+  multiline.pattern: '^\d{4}-\d{2}-\d{2}'
+  multiline.negate: true
+  multiline.match: after
+  
+  # JSON 로그 파싱
+  json.keys_under_root: true
+  json.add_error_key: true
+  json.message_key: message
+
+# Docker 컨테이너 로그 수집
+- type: docker
+  enabled: true
+  containers.ids: "*"
+  containers.path: "/var/lib/docker/containers"
+  containers.stream: "all"
+  
+  processors:
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  
+  # 특정 컨테이너 필터링
+  containers.include_labels:
+    - "logging=enabled"
+
+# 시스템 로그 수집
+- type: log
+  enabled: true
+  paths:
+    - /host/var/log/syslog
+    - /host/var/log/messages
+    - /host/var/log/auth.log
+  fields:
+    logtype: system
+    environment: ${ENVIRONMENT:development}
+  fields_under_root: true
+
+# 웹 서버 액세스 로그
+- type: log
+  enabled: true
+  paths:
+    - /host/var/log/nginx/access.log
+    - /host/var/log/apache2/access.log
+  fields:
+    logtype: access
+    environment: ${ENVIRONMENT:development}
+  fields_under_root: true
+
+# Logstash로 출력
+output.logstash:
+  hosts: ["${LOGSTASH_HOST:logstash:5044}"]
+  bulk_max_size: 1024
+  template.settings:
+    index.number_of_shards: 1
+    index.number_of_replicas: 0
+
+# 직접 Elasticsearch 출력 (옵션)
+# output.elasticsearch:
+#   hosts: ["${ELASTICSEARCH_HOST:elasticsearch:9200}"]
+#   index: "filebeat-%{[fields.environment]}-%{+yyyy.MM.dd}"
+#   template.enabled: true
+#   template.pattern: "filebeat-*"
+
+# 로깅 설정
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# 프로세서 설정
+processors:
+- add_host_metadata:
+    when.not.contains.tags: forwarded
+    
+- add_cloud_metadata: ~
+
+- add_docker_metadata: ~
+
+- timestamp:
+    field: timestamp
+    layouts:
+      - '2006-01-02T15:04:05Z'
+      - '2006-01-02T15:04:05.000Z'
+    test:
+      - '2023-12-01T15:30:45Z'
+
+# 필드 드롭 (불필요한 메타데이터 제거)
+- drop_fields:
+    fields: ["beat", "input", "prospector", "offset"]
+
+# 모니터링
+monitoring.enabled: true
+monitoring.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST:elasticsearch:9200}"]
+
+# HTTP 엔드포인트 (상태 확인용)
+http.enabled: true
+http.host: 0.0.0.0
+http.port: 5066
